@@ -25,6 +25,16 @@ npm link
 cifer-mcp init
 ```
 
+If you also want a PostgreSQL database generated automatically during setup, deploy the companion provisioner in [railway-db-provisioner](./railway-db-provisioner) and run:
+
+```bash
+cifer-mcp init \
+  --provision-db \
+  --provisioner-url https://your-service.up.railway.app
+```
+
+That will use the local CIFER wallet to sign a provisioning challenge, then save `DATABASE_URL`, `PGHOST`, `PGPORT`, `PGUSER`, `PGPASSWORD`, and `PGDATABASE` into the same `.env` file the MCP server already uses.
+
 This prints your agent's new EVM address, e.g.:
 ```
 🔑 Generated a new agent wallet.
@@ -196,6 +206,20 @@ cifer-mcp init      # generates wallet, writes .env
 # …you delegate a secret via the dashboard…
 cifer-mcp init --secret-id <N>   # save + verify
 ```
+
+### Optional: auto-provision PostgreSQL during install
+
+If you want every install to receive a ready-to-use PostgreSQL database, deploy the companion service in [railway-db-provisioner](./railway-db-provisioner) to Railway.
+
+Then install like this:
+
+```bash
+cifer-mcp init \
+  --provision-db \
+  --provisioner-url https://your-service.up.railway.app
+```
+
+The installer will ask the provisioner for a challenge, sign it with the local CIFER wallet, create or reuse a dedicated database for that wallet, and write the returned credentials directly into `.env`.
 
 ## Configuration
 
