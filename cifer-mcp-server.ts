@@ -1,4 +1,4 @@
-#!/usr/bin/env npx tsx
+#!/usr/bin/env node
 /**
  * CIFER MCP Server
  *
@@ -10,7 +10,7 @@
  *
  * Configure via .env:
  *   CIFER_PK=0x...            (required — agent wallet private key)
- *   CIFER_SECRET_ID=31        (required — secret to operate on)
+ *   CIFER_SECRET_ID=<id>      (required — secret to operate on)
  *   CIFER_BLACKBOX_URL=...    (optional)
  *   CIFER_RPC_URL=...         (optional)
  *   CIFER_CHAIN_ID=752025     (optional)
@@ -136,7 +136,7 @@ server.tool(
               "\n\n⚠️ CIFER is not ready. The user needs to:\n" +
               `1. Make sure .env exists at ${ENV_PATH}\n` +
               "2. Set CIFER_PK (agent private key) and CIFER_SECRET_ID inside it.\n" +
-              "   Use `node dist/cifer-tool.js init` to generate CIFER_PK automatically.\n" +
+              "   Use `cifer-mcp init` to generate CIFER_PK automatically.\n" +
               "3. Do NOT put CIFER_PK in the MCP host config file — keep it in .env only.",
           },
         ],
@@ -678,7 +678,7 @@ server.tool(
               ? `Secret #${currentSecretId} is NOT delegated to ${address}. Ask the secret owner to delegate it via ${DASHBOARD_URL}.`
               : isSyncing
                 ? `Ready — but secret #${currentSecretId} is still syncing. Wait 30–60 seconds before the first encrypt/decrypt call. If the MCP host is already configured, no restart is needed (the .env is reloaded on each tool call via dotenv).`
-                : `Ready. Agent can now encrypt and decrypt with secret #${currentSecretId}. If this is the first install, register the server with the MCP host using the CLI: 'node dist/cifer-tool.js config <host> --apply' (hosts: hermes, claude-desktop, claude-code, openclaw, cursor), then restart the host.`;
+                : `Ready. Agent can now encrypt and decrypt with secret #${currentSecretId}. If this is the first install, register the server with the MCP host using the CLI: 'cifer-mcp config <host> --apply' (hosts: hermes, claude-desktop, claude-code, openclaw, cursor), then restart the host.`;
 
       return {
         content: [

@@ -1,8 +1,8 @@
-#!/usr/bin/env npx tsx
+#!/usr/bin/env node
 /**
  * cifer-tool.ts — Standalone CLI for AI agents to use CIFER encryption.
  *
- * Usage:  npx tsx cifer-tool.ts <command> [flags]
+ * Usage:  cifer-mcp <command> [flags]
  *
  * Commands:
  *   check-env                       Validate that .env is configured
@@ -597,7 +597,7 @@ async function cmdInit(args: string[]) {
     nextStep: !secretIdStr
       ? `Delegate secret to ${address}, then run: cifer-mcp init --secret-id <N>`
       : authorized
-        ? "Register the server with your MCP host using `cifer-tool config <host> --apply` (hosts: hermes, claude-desktop, claude-code, openclaw, cursor), then restart the host."
+        ? "Register the server with your MCP host using `cifer-mcp config <host> --apply` (hosts: hermes, claude-desktop, claude-code, openclaw, cursor), then restart the host."
         : `Ask secret owner to delegate #${secretIdStr} to ${address}.`,
   });
 }
@@ -812,12 +812,12 @@ async function cmdConfig(args: string[]) {
       .map((h) => `    - ${h.id}  (${h.label}, ${h.format})`)
       .join("\n");
     process.stderr.write(
-      `Usage: cifer-tool config <host> [--apply] [--path <file>] [--force]\n\n` +
+      `Usage: cifer-mcp config <host> [--apply] [--path <file>] [--force]\n\n` +
         `Supported hosts:\n${hostList}\n\n` +
         `Examples:\n` +
-        `  cifer-tool config hermes                # print YAML snippet to stdout\n` +
-        `  cifer-tool config hermes --apply        # merge into ~/.hermes/config.yaml\n` +
-        `  cifer-tool config claude-desktop --apply\n\n`
+        `  cifer-mcp config hermes                # print YAML snippet to stdout\n` +
+        `  cifer-mcp config hermes --apply        # merge into ~/.hermes/config.yaml\n` +
+        `  cifer-mcp config claude-desktop --apply\n\n`
     );
     process.exit(0);
   }
@@ -902,7 +902,7 @@ async function cmdDoctor(_args: string[]) {
       ok: false,
       detail: `expected at ${ENV_PATH}`,
     });
-    actions.push(`Run 'node dist/cifer-tool.js init' to create .env.`);
+    actions.push(`Run 'cifer-mcp init' to create .env.`);
   }
 
   // 2. CIFER_PK present and valid
@@ -924,12 +924,12 @@ async function cmdDoctor(_args: string[]) {
         detail: "malformed private key",
       });
       actions.push(
-        `Run 'node dist/cifer-tool.js init --force' to regenerate the wallet.`
+        `Run 'cifer-mcp init --force' to regenerate the wallet.`
       );
     }
   } else {
     checks.push({ label: "CIFER_PK valid", ok: false, detail: "missing" });
-    actions.push(`Run 'node dist/cifer-tool.js init' to generate a wallet.`);
+    actions.push(`Run 'cifer-mcp init' to generate a wallet.`);
   }
 
   // 3. CIFER_SECRET_ID present
@@ -944,7 +944,7 @@ async function cmdDoctor(_args: string[]) {
   } else {
     checks.push({ label: "CIFER_SECRET_ID set", ok: false });
     actions.push(
-      `Delegate a secret to your wallet via the dashboard, then run 'node dist/cifer-tool.js init --secret-id <N>'.`
+      `Delegate a secret to your wallet via the dashboard, then run 'cifer-mcp init --secret-id <N>'.`
     );
   }
 
@@ -1025,7 +1025,7 @@ async function cmdDoctor(_args: string[]) {
           detail: "mcp_servers is a LIST (will crash Hermes at startup)",
         });
         actions.push(
-          `Run 'node dist/cifer-tool.js config hermes --apply --force' to repair the config.`
+          `Run 'cifer-mcp config hermes --apply --force' to repair the config.`
         );
       } else if (mcpServers && typeof mcpServers === "object") {
         const cifer = (mcpServers as Record<string, unknown>).cifer;
@@ -1036,7 +1036,7 @@ async function cmdDoctor(_args: string[]) {
             detail: "not registered",
           });
           actions.push(
-            `Run 'node dist/cifer-tool.js config hermes --apply' to register CIFER with Hermes.`
+            `Run 'cifer-mcp config hermes --apply' to register CIFER with Hermes.`
           );
         } else if (typeof cifer === "object" && cifer !== null) {
           const ciferEntry = cifer as Record<string, unknown>;
@@ -1048,7 +1048,7 @@ async function cmdDoctor(_args: string[]) {
                 "env block present — may contain leaked secrets. Remove it; .env is used instead.",
             });
             actions.push(
-              `Run 'node dist/cifer-tool.js config hermes --apply --force' to remove the env block.`
+              `Run 'cifer-mcp config hermes --apply --force' to remove the env block.`
             );
           } else {
             const args0 = Array.isArray(ciferEntry.args)
@@ -1061,7 +1061,7 @@ async function cmdDoctor(_args: string[]) {
                 detail: `points to ${args0} (does not exist)`,
               });
               actions.push(
-                `Run 'node dist/cifer-tool.js config hermes --apply' to fix the server path.`
+                `Run 'cifer-mcp config hermes --apply' to fix the server path.`
               );
             } else {
               checks.push({
@@ -1079,7 +1079,7 @@ async function cmdDoctor(_args: string[]) {
           detail: "missing",
         });
         actions.push(
-          `Run 'node dist/cifer-tool.js config hermes --apply' to add the CIFER entry.`
+          `Run 'cifer-mcp config hermes --apply' to add the CIFER entry.`
         );
       }
     } catch (e) {
@@ -1147,7 +1147,7 @@ if (!command || command === "--help" || command === "-h") {
   process.stderr.write(`
 CIFER Agent Tool — Quantum-resistant encryption for AI agents on Ternoa.
 
-Usage:  npx tsx cifer-tool.ts <command> [flags]
+Usage:  cifer-mcp <command> [flags]
 
 Commands:
   init [--secret-id <N>] [--force]     Generate agent wallet + write .env (start here)

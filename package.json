@@ -21,6 +21,10 @@
     "quantum-resistant",
     "ml-kem"
   ],
+  "bin": {
+    "cifer-mcp": "./dist/cifer-tool.js",
+    "cifer-mcp-stdio": "./dist/cifer-mcp-server.js"
+  },
   "files": [
     "dist",
     "README.md",
@@ -28,6 +32,7 @@
     ".env.example"
   ],
   "scripts": {
+    "prepare": "npm run build",
     "build": "tsc",
     "clean": "rm -rf dist",
     "cifer": "tsx cifer-tool.ts",

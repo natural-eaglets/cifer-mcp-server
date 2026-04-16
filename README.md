@@ -14,13 +14,15 @@ From zero to encrypted secrets in roughly 5 commands. Replace `<host>` with one 
 git clone https://github.com/natural-eaglets/cifer-mcp-server.git
 cd cifer-mcp-server
 npm install
-npm run build
+npm link
 ```
+
+`npm install` builds `dist/` automatically. `npm link` exposes the `cifer-mcp` command on the machine, so an agent can keep using one stable command instead of remembering the dist path.
 
 ### 2. Generate the agent wallet
 
 ```bash
-node dist/cifer-tool.js init
+cifer-mcp init
 ```
 
 This prints your agent's new EVM address, e.g.:
@@ -39,7 +41,7 @@ This prints your agent's new EVM address, e.g.:
 ### 4. Save + verify the secret ID
 
 ```bash
-node dist/cifer-tool.js init --secret-id <N>     # replace <N> with the ID
+cifer-mcp init --secret-id <N>     # replace <N> with the ID
 ```
 
 Expected: `"authorized": true` in the output.
@@ -47,7 +49,7 @@ Expected: `"authorized": true` in the output.
 ### 5. Register the MCP server with your host
 
 ```bash
-node dist/cifer-tool.js config <host> --apply
+cifer-mcp config <host> --apply
 ```
 
 This merges a correctly-shaped entry into the host's config file with a timestamped backup. It also **auto-repairs** a malformed existing entry (e.g. Hermes' `mcp_servers:` accidentally being a YAML list instead of a mapping).
@@ -90,7 +92,7 @@ List all tools whose name starts with mcp_cifer_, then run mcp_cifer_cifer_check
 **Failure looks like any of these:**
 - Agent says "I don't have those tools" → native MCP didn't load the server. Go to [Troubleshooting](#troubleshooting).
 - Agent falls back to `npx mcporter call ...` → same issue.
-- Agent runs `node dist/cifer-tool.js ...` → same issue.
+- Agent runs `cifer-mcp ...` from a shell instead of using native tools → same issue.
 
 If you see any of those workarounds, the integration is broken even though the CLI works. Run the reset below.
 
@@ -98,14 +100,14 @@ If you see any of those workarounds, the integration is broken even though the C
 
 Hand your agent this prompt — it can run every step except the on-chain delegation:
 
-> Clone `https://github.com/natural-eaglets/cifer-mcp-server.git` into my home directory, install and build it, then run `node dist/cifer-tool.js init`. Tell me the agent wallet address it generated and wait for me to reply with a secret ID. Once I do, run `node dist/cifer-tool.js init --secret-id <ID>` to verify, then `node dist/cifer-tool.js config <host> --apply` to register yourself with my MCP host (use `hermes` / `claude-desktop` / `claude-code` / `openclaw` / `cursor` as appropriate). Then run `node dist/cifer-tool.js doctor` and report the output. Finally, tell me exactly how to restart the host (use the full gateway-restart commands from the README for Hermes — don't just restart the CLI). After I restart, verify that tools named `mcp_cifer_*` are listed in your toolbox — if they aren't, do NOT fall back to `mcporter` or shelling out to the CLI; tell me the integration failed and run `doctor` again so we can fix it. Do not edit any config files by hand — always use the `config` command.
+> Clone `https://github.com/natural-eaglets/cifer-mcp-server.git` into my home directory, run `npm install` and `npm link`, then run `cifer-mcp init`. Tell me the agent wallet address it generated and wait for me to reply with a secret ID. Once I do, run `cifer-mcp init --secret-id <ID>` to verify, then `cifer-mcp config <host> --apply` to register yourself with my MCP host (use `hermes` / `claude-desktop` / `claude-code` / `openclaw` / `cursor` as appropriate). Then run `cifer-mcp doctor` and report the output. Finally, tell me exactly how to restart the host (use the full gateway-restart commands from the README for Hermes — don't just restart the CLI). After I restart, verify that tools named `mcp_cifer_*` are listed in your toolbox — if they aren't, do NOT fall back to `mcporter` or shelling out to the CLI; tell me the integration failed and run `doctor` again so we can fix it. Do not edit any config files by hand — always use the `config` command.
 
 ## Troubleshooting
 
 When something breaks, your first move should always be:
 
 ```bash
-cd <repo> && node dist/cifer-tool.js doctor
+cd <repo> && cifer-mcp doctor
 ```
 
 `doctor` checks .env resolution, CIFER_PK validity, secret existence + authorization, the built binary, and the Hermes host config — then tells you the exact next command to run. It also detects common regressions (malformed YAML shape, leftover `env:` blocks with leaked keys, stale server paths). Start there for 90% of issues.
@@ -116,7 +118,7 @@ If `doctor` reports a bad shape, or a previous agent edited `~/.hermes/config.ya
 
 ```bash
 cd <repo>
-node dist/cifer-tool.js config hermes --apply --force   # or --host for others
+cifer-mcp config hermes --apply --force   # or --host for others
 ```
 
 `--force` tells the tool to overwrite any malformed existing entry (for example, `mcp_servers:` being a YAML list instead of a mapping — which is a real crash bug we've seen). The original file is always backed up to `<file>.cifer-backup.<timestamp>`.
@@ -162,7 +164,7 @@ These are real failure modes we've seen in the wild. The `config` command and `d
 - ❌ **Do not hand-edit `~/.hermes/config.yaml`, `~/.claude/settings.json`, or any host config.** Every host has a slightly different shape; small mistakes crash them. Use `config <host> --apply` — it does a typed serializer round-trip that cannot produce invalid YAML/JSON.
 - ❌ **Do not accept an agent's "workaround" that uses `mcporter`, a subprocess per call, or the CLI via shell.** Those prove the MCP server is healthy but also prove the host isn't wired correctly — slow, fragile, and defeats the point of MCP. Run the reset recipe instead.
 - ❌ **Do not do a partial restart** (e.g. closing the chat REPL without killing the gateway). The gateway is what holds the subprocess; it must be killed for config changes to take effect.
-- ❌ **Do not put your `CIFER_PK` anywhere except `.env`** in the repo root. Not in shell history, not in `~/.bashrc`, not in the host config, not in chat. If it leaks, rotate with `node dist/cifer-tool.js init --force` and re-delegate the secret.
+- ❌ **Do not put your `CIFER_PK` anywhere except `.env`** in the repo root. Not in shell history, not in `~/.bashrc`, not in the host config, not in chat. If it leaks, rotate with `cifer-mcp init --force` and re-delegate the secret.
 
 ## Features
 
@@ -189,10 +191,10 @@ Small mistakes — for example Hermes' `mcp_servers:` accidentally being a YAML 
 git clone https://github.com/natural-eaglets/cifer-mcp-server.git
 cd cifer-mcp-server
 npm install
-npm run build
-node dist/cifer-tool.js init      # generates wallet, writes .env
+npm link
+cifer-mcp init      # generates wallet, writes .env
 # …you delegate a secret via the dashboard…
-node dist/cifer-tool.js init --secret-id <N>   # save + verify
+cifer-mcp init --secret-id <N>   # save + verify
 ```
 
 ## Configuration
@@ -205,11 +207,11 @@ Instead, use the built-in `config` command. It emits the exact block for the hos
 
 ```bash
 # Pick your host and let the tool handle the rest:
-node dist/cifer-tool.js config hermes           --apply
-node dist/cifer-tool.js config claude-desktop   --apply
-node dist/cifer-tool.js config claude-code      --apply
-node dist/cifer-tool.js config openclaw         --apply
-node dist/cifer-tool.js config cursor           --apply
+cifer-mcp config hermes           --apply
+cifer-mcp config claude-desktop   --apply
+cifer-mcp config claude-code      --apply
+cifer-mcp config openclaw         --apply
+cifer-mcp config cursor           --apply
 ```
 
 This will:
@@ -226,16 +228,16 @@ Then restart the host to pick up the new server.
 Drop `--apply` to print the correct block to stdout — useful if you'd rather paste manually, or if the host config lives in a non-default location.
 
 ```bash
-node dist/cifer-tool.js config hermes
+cifer-mcp config hermes
 # → prints YAML block
-node dist/cifer-tool.js config claude-desktop
+cifer-mcp config claude-desktop
 # → prints JSON block
 ```
 
 ### Custom config location
 
 ```bash
-node dist/cifer-tool.js config hermes --apply --path /custom/path/to/config.yaml
+cifer-mcp config hermes --apply --path /custom/path/to/config.yaml
 ```
 
 ### What the resulting entry looks like
@@ -372,20 +374,20 @@ Async file decryption. Strips the `.cifer` extension on the output.
 For agent frameworks without MCP support, use the CLI directly. All commands output JSON on stdout.
 
 ```bash
-npx tsx cifer-tool.ts init                          # generate wallet + write .env
-npx tsx cifer-tool.ts init --secret-id 42           # save & verify secret ID
-npx tsx cifer-tool.ts config hermes --apply         # wire into host config safely
-npx tsx cifer-tool.ts doctor                        # end-to-end health check
-npx tsx cifer-tool.ts check-env
-npx tsx cifer-tool.ts check-secret
-npx tsx cifer-tool.ts get-quota
-npx tsx cifer-tool.ts encrypt --text "API_KEY=sk-abc"
-npx tsx cifer-tool.ts decrypt --cifer 0x... --message 0x...
-npx tsx cifer-tool.ts encrypt-file --file ./secrets.json
-npx tsx cifer-tool.ts decrypt-file --file ./secrets.json.cifer
+cifer-mcp init                          # generate wallet + write .env
+cifer-mcp init --secret-id 42           # save & verify secret ID
+cifer-mcp config hermes --apply         # wire into host config safely
+cifer-mcp doctor                        # end-to-end health check
+cifer-mcp check-env
+cifer-mcp check-secret
+cifer-mcp get-quota
+cifer-mcp encrypt --text "API_KEY=sk-abc"
+cifer-mcp decrypt --cifer 0x... --message 0x...
+cifer-mcp encrypt-file --file ./secrets.json
+cifer-mcp decrypt-file --file ./secrets.json.cifer
 ```
 
-After `npm run build`, swap `npx tsx cifer-tool.ts` for `node dist/cifer-tool.js` for faster startup.
+For local development without `npm link`, use `npm run cifer -- <command>`.
 
 ## Typical Agent Workflow
 
