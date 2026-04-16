@@ -872,6 +872,260 @@ async function cmdConfig(args: string[]) {
   }
 }
 
+// ─── doctor ──────────────────────────────────────────────────────────────────
+//
+// End-to-end self-test. Prints a checklist of every thing that must be true
+// for the MCP integration to work, plus a concrete "what to do next" at the
+// bottom. Agents and humans both run this when something's off — it replaces
+// the "grep five different files" ritual with one command.
+
+type DoctorCheck = {
+  label: string;
+  ok: boolean;
+  detail?: string;
+};
+
+async function cmdDoctor(_args: string[]) {
+  const checks: DoctorCheck[] = [];
+  const actions: string[] = [];
+
+  // 1. .env resolution
+  if (LOADED_ENV_PATH) {
+    checks.push({
+      label: ".env file resolved",
+      ok: true,
+      detail: LOADED_ENV_PATH,
+    });
+  } else {
+    checks.push({
+      label: ".env file resolved",
+      ok: false,
+      detail: `expected at ${ENV_PATH}`,
+    });
+    actions.push(`Run 'node dist/cifer-tool.js init' to create .env.`);
+  }
+
+  // 2. CIFER_PK present and valid
+  const pk = process.env.CIFER_PK;
+  const hasPk = !!pk && !pk.startsWith("0x_your");
+  let walletAddress: string | null = null;
+  if (hasPk) {
+    try {
+      walletAddress = new Wallet(pk).address;
+      checks.push({
+        label: "CIFER_PK valid",
+        ok: true,
+        detail: walletAddress,
+      });
+    } catch {
+      checks.push({
+        label: "CIFER_PK valid",
+        ok: false,
+        detail: "malformed private key",
+      });
+      actions.push(
+        `Run 'node dist/cifer-tool.js init --force' to regenerate the wallet.`
+      );
+    }
+  } else {
+    checks.push({ label: "CIFER_PK valid", ok: false, detail: "missing" });
+    actions.push(`Run 'node dist/cifer-tool.js init' to generate a wallet.`);
+  }
+
+  // 3. CIFER_SECRET_ID present
+  const secretIdStr = process.env.CIFER_SECRET_ID;
+  const hasSecret = !!secretIdStr && secretIdStr.trim() !== "";
+  if (hasSecret) {
+    checks.push({
+      label: "CIFER_SECRET_ID set",
+      ok: true,
+      detail: secretIdStr,
+    });
+  } else {
+    checks.push({ label: "CIFER_SECRET_ID set", ok: false });
+    actions.push(
+      `Delegate a secret to your wallet via the dashboard, then run 'node dist/cifer-tool.js init --secret-id <N>'.`
+    );
+  }
+
+  // 4. Secret is on-chain + wallet is authorized
+  if (hasPk && hasSecret && walletAddress) {
+    try {
+      const sdk = await initSdk();
+      const controllerAddress = sdk.getControllerAddress(CHAIN_ID);
+      const params = {
+        chainId: CHAIN_ID,
+        controllerAddress,
+        readClient: sdk.readClient,
+      };
+      const state = await keyManagement.getSecret(
+        params,
+        BigInt(secretIdStr)
+      );
+      const authorized = await keyManagement.isAuthorized(
+        params,
+        BigInt(secretIdStr),
+        walletAddress as `0x${string}`
+      );
+      checks.push({
+        label: "Secret exists on-chain",
+        ok: true,
+        detail: `owner ${state.owner.slice(0, 8)}…${state.owner.slice(-4)}${state.isSyncing ? " (still syncing)" : ""}`,
+      });
+      checks.push({
+        label: "Wallet authorized on secret",
+        ok: authorized,
+        detail: authorized ? "yes (owner or delegate)" : "NO — delegate required",
+      });
+      if (!authorized) {
+        actions.push(
+          `Ask the secret owner to delegate secret #${secretIdStr} to ${walletAddress}.`
+        );
+      }
+    } catch (e) {
+      checks.push({
+        label: "Secret exists on-chain",
+        ok: false,
+        detail: e instanceof Error ? e.message : String(e),
+      });
+      actions.push(
+        `Could not reach the Ternoa RPC or the secret does not exist. Check CIFER_RPC_URL.`
+      );
+    }
+  }
+
+  // 5. Built MCP server binary exists
+  const mcpPath = resolveMcpServerPath();
+  if (existsSync(mcpPath)) {
+    checks.push({
+      label: "MCP server built",
+      ok: true,
+      detail: mcpPath,
+    });
+  } else {
+    checks.push({
+      label: "MCP server built",
+      ok: false,
+      detail: `${mcpPath} not found`,
+    });
+    actions.push(`Run 'npm run build' in the repo root.`);
+  }
+
+  // 6. Hermes host config check (if the file exists)
+  const hermesConfigPath = defaultConfigPath("hermes");
+  if (existsSync(hermesConfigPath)) {
+    try {
+      const raw = readFileSync(hermesConfigPath, "utf-8");
+      const parsed = (yaml.load(raw) ?? {}) as Record<string, unknown>;
+      const mcpServers = parsed.mcp_servers;
+      if (Array.isArray(mcpServers)) {
+        checks.push({
+          label: "Hermes config shape",
+          ok: false,
+          detail: "mcp_servers is a LIST (will crash Hermes at startup)",
+        });
+        actions.push(
+          `Run 'node dist/cifer-tool.js config hermes --apply --force' to repair the config.`
+        );
+      } else if (mcpServers && typeof mcpServers === "object") {
+        const cifer = (mcpServers as Record<string, unknown>).cifer;
+        if (!cifer) {
+          checks.push({
+            label: "Hermes config has cifer entry",
+            ok: false,
+            detail: "not registered",
+          });
+          actions.push(
+            `Run 'node dist/cifer-tool.js config hermes --apply' to register CIFER with Hermes.`
+          );
+        } else if (typeof cifer === "object" && cifer !== null) {
+          const ciferEntry = cifer as Record<string, unknown>;
+          if ("env" in ciferEntry) {
+            checks.push({
+              label: "Hermes config clean",
+              ok: false,
+              detail:
+                "env block present — may contain leaked secrets. Remove it; .env is used instead.",
+            });
+            actions.push(
+              `Run 'node dist/cifer-tool.js config hermes --apply --force' to remove the env block.`
+            );
+          } else {
+            const args0 = Array.isArray(ciferEntry.args)
+              ? (ciferEntry.args as unknown[])[0]
+              : undefined;
+            if (typeof args0 === "string" && !existsSync(args0)) {
+              checks.push({
+                label: "Hermes config path",
+                ok: false,
+                detail: `points to ${args0} (does not exist)`,
+              });
+              actions.push(
+                `Run 'node dist/cifer-tool.js config hermes --apply' to fix the server path.`
+              );
+            } else {
+              checks.push({
+                label: "Hermes config OK",
+                ok: true,
+                detail: typeof args0 === "string" ? args0 : "registered",
+              });
+            }
+          }
+        }
+      } else {
+        checks.push({
+          label: "Hermes config has mcp_servers",
+          ok: false,
+          detail: "missing",
+        });
+        actions.push(
+          `Run 'node dist/cifer-tool.js config hermes --apply' to add the CIFER entry.`
+        );
+      }
+    } catch (e) {
+      checks.push({
+        label: "Hermes config parseable",
+        ok: false,
+        detail: e instanceof Error ? e.message : String(e),
+      });
+    }
+  }
+
+  // Print human-readable checklist to stderr
+  process.stderr.write("\nCIFER MCP doctor — configuration health check\n");
+  process.stderr.write("─".repeat(60) + "\n");
+  for (const c of checks) {
+    const mark = c.ok ? "✓" : "✗";
+    const line = `${mark} ${c.label}`.padEnd(38);
+    process.stderr.write(`${line}${c.detail ? " · " + c.detail : ""}\n`);
+  }
+  process.stderr.write("\n");
+  if (actions.length === 0) {
+    process.stderr.write(
+      "✓ All checks passed. If Hermes still doesn't list mcp_cifer_* tools,\n" +
+        "  fully restart the gateway (not just the CLI):\n\n" +
+        "    pkill -f 'hermes gateway' 2>/dev/null\n" +
+        "    pkill -f 'hermes' 2>/dev/null\n" +
+        "    sleep 2 && rm -f ~/.hermes/gateway.pid\n" +
+        "    hermes gateway run &>/tmp/hermes-gateway.log &\n" +
+        "    sleep 4 && hermes\n\n"
+    );
+  } else {
+    process.stderr.write("Next steps:\n");
+    actions.forEach((a, i) =>
+      process.stderr.write(`  ${i + 1}. ${a}\n`)
+    );
+    process.stderr.write("\n");
+  }
+
+  // Machine-readable JSON on stdout
+  ok({
+    ready: checks.every((c) => c.ok),
+    checks,
+    actions,
+  });
+}
+
 // ─── Router ──────────────────────────────────────────────────────────────────
 
 const [command, ...args] = process.argv.slice(2);
@@ -879,6 +1133,7 @@ const [command, ...args] = process.argv.slice(2);
 const commands: Record<string, (args: string[]) => Promise<void>> = {
   init: cmdInit,
   config: cmdConfig,
+  doctor: cmdDoctor,
   "check-env": cmdCheckEnv,
   "check-secret": cmdCheckSecret,
   "get-quota": cmdGetQuota,
@@ -899,6 +1154,7 @@ Commands:
   config <host> [--apply] [--path f]   Print/apply MCP config block for a host.
                                        Hosts: hermes, claude-desktop, claude-code,
                                               openclaw, cursor
+  doctor                               End-to-end health check + next-step guidance
   check-env                            Validate .env configuration
   check-secret [--id <N>]              Check if a secret exists and is ready
   get-quota                            Show encrypt/decrypt data quota
