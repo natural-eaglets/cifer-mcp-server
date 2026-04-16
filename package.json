@@ -1,0 +1,48 @@
+{
+  "name": "cifer-mcp-server",
+  "version": "1.0.0",
+  "description": "MCP server + CLI for AI agents to use CIFER quantum-resistant encryption (ML-KEM-768) on Ternoa zkEVM. Works with Nous Research Hermes, OpenClaw, Claude Code, and any MCP-compatible host.",
+  "type": "module",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/natural-eaglets/cifer-mcp-server.git"
+  },
+  "homepage": "https://github.com/natural-eaglets/cifer-mcp-server#readme",
+  "bugs": {
+    "url": "https://github.com/natural-eaglets/cifer-mcp-server/issues"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "cifer",
+    "ternoa",
+    "encryption",
+    "quantum-resistant",
+    "ml-kem"
+  ],
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE",
+    ".env.example"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "clean": "rm -rf dist",
+    "cifer": "tsx cifer-tool.ts",
+    "mcp": "tsx cifer-mcp-server.ts",
+    "mcp:dist": "node dist/cifer-mcp-server.js",
+    "cifer:dist": "node dist/cifer-tool.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "cifer-sdk": "^0.3.0",
+    "dotenv": "^16.4.0",
+    "ethers": "^6.13.0"
+  },
+  "devDependencies": {
+    "tsx": "^4.19.0",
+    "typescript": "^5.5.0"
+  }
+}

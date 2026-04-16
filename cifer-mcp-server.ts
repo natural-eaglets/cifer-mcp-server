@@ -1,0 +1,542 @@
+#!/usr/bin/env npx tsx
+/**
+ * CIFER MCP Server
+ *
+ * Exposes quantum-resistant CIFER encryption tools over the Model Context
+ * Protocol (MCP). Compatible with Claude Code, OpenClaw, and any MCP host.
+ *
+ * Usage:
+ *   npx tsx cifer-mcp-server.ts          # stdio transport (default)
+ *
+ * Configure via .env:
+ *   CIFER_PK=0x...            (required — agent wallet private key)
+ *   CIFER_SECRET_ID=31        (required — secret to operate on)
+ *   CIFER_BLACKBOX_URL=...    (optional)
+ *   CIFER_RPC_URL=...         (optional)
+ *   CIFER_CHAIN_ID=752025     (optional)
+ */
+
+import "dotenv/config";
+import { resolve } from "node:path";
+import { readFileSync, writeFileSync } from "node:fs";
+import { Wallet } from "ethers";
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { z } from "zod";
+import {
+  createCiferSdk,
+  keyManagement,
+  blackbox,
+  isCiferError,
+} from "cifer-sdk";
+import type { SignerAdapter } from "cifer-sdk";
+
+// ─── Config ──────────────────────────────────────────────────────────────────
+
+const CHAIN_ID = Number(process.env.CIFER_CHAIN_ID ?? "752025");
+const BLACKBOX_URL =
+  process.env.CIFER_BLACKBOX_URL ?? "https://cifer-blackbox.ternoa.dev:3010";
+const RPC_URL =
+  process.env.CIFER_RPC_URL ?? "https://rpc-mainnet.zkevm.ternoa.network/";
+
+// ─── Helpers ─────────────────────────────────────────────────────────────────
+
+function buildSigner(pk: string): { signer: SignerAdapter; address: string } {
+  const wallet = new Wallet(pk);
+  const signer: SignerAdapter = {
+    async getAddress() {
+      return wallet.address as `0x${string}`;
+    },
+    async signMessage(message: string) {
+      return (await wallet.signMessage(message)) as `0x${string}`;
+    },
+  };
+  return { signer, address: wallet.address };
+}
+
+async function initSdk() {
+  return createCiferSdk({
+    blackboxUrl: BLACKBOX_URL,
+    chainOverrides: {
+      [CHAIN_ID]: { rpcUrl: RPC_URL },
+    },
+  });
+}
+
+/** JSON-safe bigint conversion. */
+function toJson(obj: unknown): string {
+  return JSON.stringify(
+    obj,
+    (_key, value) => (typeof value === "bigint" ? value.toString() : value),
+    2
+  );
+}
+
+function requireEnv(name: string): string {
+  const v = process.env[name];
+  if (!v || v.trim() === "" || v.startsWith("0x_your")) {
+    throw new Error(
+      `Missing or placeholder ${name} in .env. See .env.example for setup instructions.`
+    );
+  }
+  return v;
+}
+
+// ─── MCP Server ──────────────────────────────────────────────────────────────
+
+const server = new McpServer({
+  name: "cifer",
+  version: "1.0.0",
+});
+
+// ── Tool: cifer_check_env ────────────────────────────────────────────────────
+
+server.tool(
+  "cifer_check_env",
+  "Check if the CIFER environment is correctly configured. Returns whether CIFER_PK and CIFER_SECRET_ID are set, the resolved wallet address, and whether the agent is ready to encrypt/decrypt. Always call this first before any other CIFER tool.",
+  {},
+  async () => {
+    const pk = process.env.CIFER_PK;
+    const secretId = process.env.CIFER_SECRET_ID;
+    const hasPk = !!pk && !pk.startsWith("0x_your");
+    const hasSecretId = !!secretId && secretId.trim() !== "";
+
+    let address: string | undefined;
+    if (hasPk) {
+      try {
+        address = new Wallet(pk).address;
+      } catch {
+        // invalid key
+      }
+    }
+
+    const result = {
+      CIFER_PK: hasPk ? "set" : "MISSING",
+      CIFER_SECRET_ID: hasSecretId ? secretId : "MISSING",
+      CIFER_BLACKBOX_URL: BLACKBOX_URL,
+      CIFER_CHAIN_ID: CHAIN_ID,
+      walletAddress: address ?? null,
+      ready: hasPk && hasSecretId,
+    };
+
+    if (!result.ready) {
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text:
+              toJson(result) +
+              "\n\n⚠️ CIFER is not ready. The user needs to:\n" +
+              "1. Go to the CIFER Agent Console and create a secret.\n" +
+              "2. Delegate it to this agent's wallet address.\n" +
+              "3. Set CIFER_PK (private key) and CIFER_SECRET_ID in .env.",
+          },
+        ],
+      };
+    }
+
+    return { content: [{ type: "text" as const, text: toJson(result) }] };
+  }
+);
+
+// ── Tool: cifer_check_secret ─────────────────────────────────────────────────
+
+server.tool(
+  "cifer_check_secret",
+  "Check if a CIFER secret exists on-chain and is ready for use. Reports the secret state (owner, delegate, syncing status), and whether this agent's wallet is authorized to encrypt/decrypt with it.",
+  {
+    secretId: z
+      .string()
+      .optional()
+      .describe(
+        "Secret ID to check. Defaults to CIFER_SECRET_ID from .env."
+      ),
+  },
+  async ({ secretId: idArg }) => {
+    try {
+      const pk = requireEnv("CIFER_PK");
+      const idStr = idArg ?? requireEnv("CIFER_SECRET_ID");
+      const secretId = BigInt(idStr);
+      const sdk = await initSdk();
+      const controllerAddress = sdk.getControllerAddress(CHAIN_ID);
+      const params = {
+        chainId: CHAIN_ID,
+        controllerAddress,
+        readClient: sdk.readClient,
+      };
+
+      const state = await keyManagement.getSecret(params, secretId);
+      const { address } = buildSigner(pk);
+      const authorized = await keyManagement.isAuthorized(
+        params,
+        secretId,
+        address as `0x${string}`
+      );
+
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: toJson({
+              secretId: secretId.toString(),
+              owner: state.owner,
+              delegate: state.delegate,
+              isSyncing: state.isSyncing,
+              ready: !state.isSyncing,
+              publicKeyCid: state.publicKeyCid || null,
+              walletAddress: address,
+              walletAuthorized: authorized,
+            }),
+          },
+        ],
+      };
+    } catch (e) {
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: isCiferError(e)
+              ? `Error: ${e.message} (code: ${e.code})`
+              : `Error: ${e instanceof Error ? e.message : String(e)}`,
+          },
+        ],
+        isError: true,
+      };
+    }
+  }
+);
+
+// ── Tool: cifer_get_quota ────────────────────────────────────────────────────
+
+server.tool(
+  "cifer_get_quota",
+  "Get the remaining encryption and decryption data quota (in GB) for this agent's wallet on the CIFER Blackbox.",
+  {},
+  async () => {
+    try {
+      const pk = requireEnv("CIFER_PK");
+      const { signer } = buildSigner(pk);
+      const sdk = await initSdk();
+
+      const quota = await blackbox.jobs.dataConsumption({
+        chainId: CHAIN_ID,
+        signer,
+        readClient: sdk.readClient,
+        blackboxUrl: sdk.blackboxUrl,
+      });
+
+      return {
+        content: [{ type: "text" as const, text: toJson({ quota }) }],
+      };
+    } catch (e) {
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: isCiferError(e)
+              ? `Error: ${e.message} (code: ${e.code})`
+              : `Error: ${e instanceof Error ? e.message : String(e)}`,
+          },
+        ],
+        isError: true,
+      };
+    }
+  }
+);
+
+// ── Tool: cifer_encrypt ──────────────────────────────────────────────────────
+
+server.tool(
+  "cifer_encrypt",
+  "Encrypt a plaintext message using quantum-resistant CIFER encryption (ML-KEM-768 + AES-256-GCM). Returns a `cifer` and `encryptedMessage` pair — BOTH must be stored together for later decryption. Max payload: 16KB.",
+  {
+    plaintext: z
+      .string()
+      .describe("The plaintext message to encrypt. Maximum 16KB."),
+  },
+  async ({ plaintext }) => {
+    try {
+      const pk = requireEnv("CIFER_PK");
+      const secretId = BigInt(requireEnv("CIFER_SECRET_ID"));
+      const { signer } = buildSigner(pk);
+      const sdk = await initSdk();
+
+      const result = await blackbox.payload.encryptPayload({
+        chainId: CHAIN_ID,
+        secretId,
+        plaintext,
+        signer,
+        readClient: sdk.readClient,
+        blackboxUrl: sdk.blackboxUrl,
+        outputFormat: "hex",
+      });
+
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: toJson({
+              secretId: secretId.toString(),
+              cifer: result.cifer,
+              encryptedMessage: result.encryptedMessage,
+              plaintextLength: plaintext.length,
+              note: "Store BOTH cifer and encryptedMessage — you need both to decrypt.",
+            }),
+          },
+        ],
+      };
+    } catch (e) {
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: isCiferError(e)
+              ? `Error: ${e.message} (code: ${e.code})`
+              : `Error: ${e instanceof Error ? e.message : String(e)}`,
+          },
+        ],
+        isError: true,
+      };
+    }
+  }
+);
+
+// ── Tool: cifer_decrypt ──────────────────────────────────────────────────────
+
+server.tool(
+  "cifer_decrypt",
+  "Decrypt a previously encrypted CIFER payload. Requires both the `cifer` and `encryptedMessage` hex strings returned by cifer_encrypt. The agent wallet must be the secret owner or a delegate.",
+  {
+    cifer: z
+      .string()
+      .describe(
+        "The cifer hex string from the encrypt result (ML-KEM-768 ciphertext)."
+      ),
+    encryptedMessage: z
+      .string()
+      .describe(
+        "The encryptedMessage hex string from the encrypt result (AES-GCM ciphertext)."
+      ),
+  },
+  async ({ cifer, encryptedMessage }) => {
+    try {
+      const pk = requireEnv("CIFER_PK");
+      const secretId = BigInt(requireEnv("CIFER_SECRET_ID"));
+      const { signer } = buildSigner(pk);
+      const sdk = await initSdk();
+
+      const result = await blackbox.payload.decryptPayload({
+        chainId: CHAIN_ID,
+        secretId,
+        encryptedMessage,
+        cifer,
+        signer,
+        readClient: sdk.readClient,
+        blackboxUrl: sdk.blackboxUrl,
+        inputFormat: "hex",
+      });
+
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: toJson({
+              secretId: secretId.toString(),
+              decryptedMessage: result.decryptedMessage,
+            }),
+          },
+        ],
+      };
+    } catch (e) {
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: isCiferError(e)
+              ? `Error: ${e.message} (code: ${e.code})`
+              : `Error: ${e instanceof Error ? e.message : String(e)}`,
+          },
+        ],
+        isError: true,
+      };
+    }
+  }
+);
+
+// ── Tool: cifer_encrypt_file ─────────────────────────────────────────────────
+
+server.tool(
+  "cifer_encrypt_file",
+  "Encrypt a file using CIFER. Starts an async encryption job, polls until complete, and saves the encrypted result as <filename>.cifer. Use this for files larger than 16KB (for small text, use cifer_encrypt instead).",
+  {
+    filePath: z.string().describe("Absolute or relative path to the file to encrypt."),
+  },
+  async ({ filePath }) => {
+    try {
+      const pk = requireEnv("CIFER_PK");
+      const secretId = BigInt(requireEnv("CIFER_SECRET_ID"));
+      const { signer } = buildSigner(pk);
+      const sdk = await initSdk();
+
+      const absPath = resolve(filePath);
+      const buffer = readFileSync(absPath);
+      const blob = new Blob([new Uint8Array(buffer)]);
+
+      const job = await blackbox.files.encryptFile({
+        chainId: CHAIN_ID,
+        secretId,
+        file: blob,
+        signer,
+        readClient: sdk.readClient,
+        blackboxUrl: sdk.blackboxUrl,
+      });
+
+      const final = await blackbox.jobs.pollUntilComplete(
+        job.jobId,
+        sdk.blackboxUrl,
+        { intervalMs: 2000, maxAttempts: 120 }
+      );
+
+      if (final.status !== "completed") {
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: `Encrypt job failed: ${final.error ?? final.status}`,
+            },
+          ],
+          isError: true,
+        };
+      }
+
+      const encrypted = await blackbox.jobs.download(job.jobId, {
+        blackboxUrl: sdk.blackboxUrl,
+      });
+
+      const outPath = absPath + ".cifer";
+      writeFileSync(outPath, Buffer.from(await encrypted.arrayBuffer()));
+
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: toJson({
+              jobId: job.jobId,
+              inputFile: absPath,
+              outputFile: outPath,
+              originalSize: buffer.length,
+              encryptedSize: encrypted.size,
+            }),
+          },
+        ],
+      };
+    } catch (e) {
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: isCiferError(e)
+              ? `Error: ${e.message} (code: ${e.code})`
+              : `Error: ${e instanceof Error ? e.message : String(e)}`,
+          },
+        ],
+        isError: true,
+      };
+    }
+  }
+);
+
+// ── Tool: cifer_decrypt_file ─────────────────────────────────────────────────
+
+server.tool(
+  "cifer_decrypt_file",
+  "Decrypt a .cifer file. Starts an async decryption job, polls until complete, and saves the decrypted result (strips the .cifer extension). The agent wallet must be the secret owner or delegate.",
+  {
+    filePath: z
+      .string()
+      .describe("Path to the .cifer file to decrypt."),
+  },
+  async ({ filePath }) => {
+    try {
+      const pk = requireEnv("CIFER_PK");
+      const secretId = BigInt(requireEnv("CIFER_SECRET_ID"));
+      const { signer } = buildSigner(pk);
+      const sdk = await initSdk();
+
+      const absPath = resolve(filePath);
+      const buffer = readFileSync(absPath);
+      const blob = new Blob([new Uint8Array(buffer)]);
+
+      const job = await blackbox.files.decryptFile({
+        chainId: CHAIN_ID,
+        secretId,
+        file: blob,
+        signer,
+        readClient: sdk.readClient,
+        blackboxUrl: sdk.blackboxUrl,
+      });
+
+      const final = await blackbox.jobs.pollUntilComplete(
+        job.jobId,
+        sdk.blackboxUrl,
+        { intervalMs: 2000, maxAttempts: 120 }
+      );
+
+      if (final.status !== "completed") {
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: `Decrypt job failed: ${final.error ?? final.status}`,
+            },
+          ],
+          isError: true,
+        };
+      }
+
+      const decrypted = await blackbox.jobs.download(job.jobId, {
+        blackboxUrl: sdk.blackboxUrl,
+        chainId: CHAIN_ID,
+        secretId,
+        signer,
+        readClient: sdk.readClient,
+      });
+
+      const outPath = absPath.endsWith(".cifer")
+        ? absPath.slice(0, -".cifer".length)
+        : absPath + ".decrypted";
+      writeFileSync(outPath, Buffer.from(await decrypted.arrayBuffer()));
+
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: toJson({
+              jobId: job.jobId,
+              inputFile: absPath,
+              outputFile: outPath,
+              decryptedSize: decrypted.size,
+            }),
+          },
+        ],
+      };
+    } catch (e) {
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: isCiferError(e)
+              ? `Error: ${e.message} (code: ${e.code})`
+              : `Error: ${e instanceof Error ? e.message : String(e)}`,
+          },
+        ],
+        isError: true,
+      };
+    }
+  }
+);
+
+// ─── Start ───────────────────────────────────────────────────────────────────
+
+const transport = new StdioServerTransport();
+await server.connect(transport);
