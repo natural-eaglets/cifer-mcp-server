@@ -4,6 +4,74 @@
 
 Any MCP-compatible agent framework (Nous Research Hermes, OpenClaw, Claude Code, Claude Desktop, Cursor, Zed…) can plug this in and instantly gain 8 tools: encrypt / decrypt messages and files using ML-KEM-768 (NIST post-quantum) + AES-256-GCM, plus env / secret / quota introspection — and an `init` tool that onboards the agent itself.
 
+## Quick Start — copy, paste, run
+
+From zero to encrypted secrets in roughly 5 commands. Replace `<host>` with one of: **`hermes`**, **`claude-desktop`**, **`claude-code`**, **`openclaw`**, **`cursor`**.
+
+### 1. Clone, install, build
+
+```bash
+git clone https://github.com/natural-eaglets/cifer-mcp-server.git
+cd cifer-mcp-server
+npm install
+npm run build
+```
+
+### 2. Generate the agent wallet
+
+```bash
+node dist/cifer-tool.js init
+```
+
+This prints your agent's new EVM address, e.g.:
+```
+🔑 Generated a new agent wallet.
+   Address:  0xAbC1234…def
+```
+
+### 3. Delegate a CIFER secret to that address (only step that needs you on-chain)
+
+1. Open **https://cifer.ternoa.dev**
+2. Connect your own wallet, click **Create secret**
+3. Click **Delegate…** on that secret and paste the agent's address from step 2
+4. Copy the secret ID from the dashboard
+
+### 4. Save + verify the secret ID
+
+```bash
+node dist/cifer-tool.js init --secret-id <N>     # replace <N> with the ID
+```
+
+Expected: `"authorized": true` in the output.
+
+### 5. Register the MCP server with your host
+
+```bash
+node dist/cifer-tool.js config <host> --apply
+```
+
+This merges a correctly-shaped entry into the host's config file with a timestamped backup. It also **auto-repairs** a malformed existing entry (e.g. Hermes' `mcp_servers:` accidentally being a YAML list instead of a mapping).
+
+### 6. Restart the host
+
+| Host | Command |
+|---|---|
+| **Hermes** | `kill $(cat ~/.hermes/gateway.pid) 2>/dev/null; hermes gateway run &>/dev/null & ; sleep 2 ; hermes` |
+| **Claude Desktop** | Quit and reopen the app (Cmd-Q / File → Quit) |
+| **Claude Code** | `/restart` inside the CLI, or kill and relaunch |
+| **OpenClaw** | `openclaw restart` (or kill + relaunch) |
+| **Cursor** | Quit and reopen the app |
+
+### 7. Verify
+
+In the host's chat, ask the agent: *"Run `cifer_check_env` and `cifer_check_secret`."* You should see `ready: true`, `authorized: true`, and `envFileLoaded` pointing at `<repo>/.env`. From here the agent can call `cifer_encrypt` / `cifer_decrypt` on any sensitive data.
+
+### Giving it to an agent to do on its own
+
+Hand your agent this prompt — it can run every step except the on-chain delegation:
+
+> Clone `https://github.com/natural-eaglets/cifer-mcp-server.git` into my home directory, install and build it, then run `node dist/cifer-tool.js init`. Tell me the agent wallet address it generated and wait for me to reply with a secret ID. Once I do, run `node dist/cifer-tool.js init --secret-id <ID>` to verify, then `node dist/cifer-tool.js config <host> --apply` to register yourself with my MCP host (use `hermes` / `claude-desktop` / `claude-code` / `openclaw` / `cursor` as appropriate). Finally, tell me exactly how to restart the host and, after I do, verify with `cifer_check_env` and `cifer_check_secret`. Do not edit any config files by hand — always use the `config` command.
+
 ## Features
 
 - **8 MCP tools** — init, check env, check secret, read quota, encrypt text, decrypt text, encrypt file, decrypt file
@@ -13,38 +81,15 @@ Any MCP-compatible agent framework (Nous Research Hermes, OpenClaw, Claude Code,
 - **Private-key signer** — server-side wallet from `.env` (never browser-bound)
 - **Ternoa mainnet** by default, chain / RPC / Blackbox URL all overridable
 
-## Agent Onboarding (the short version)
+## Why `config <host> --apply` and not hand-written YAML
 
-An agent you give this repo to can bring itself online in four commands:
+Every MCP host expects a slightly different shape in its config file:
 
-```bash
-git clone https://github.com/natural-eaglets/cifer-mcp-server.git
-cd cifer-mcp-server && npm install && npm run build
-node dist/cifer-tool.js init                             # 1. generate wallet
-# ...you delegate a secret on cifer.ternoa.dev ...
-node dist/cifer-tool.js init --secret-id <N>             # 2. save + verify
-node dist/cifer-tool.js config <host> --apply            # 3. wire into host
-# ...restart the host ...
-```
+- **Hermes** wants a YAML mapping under `mcp_servers:` (not a list!)
+- **Claude / OpenClaw / Cursor** want a JSON object under `mcpServers`
+- Each has its own default path
 
-After step 1 `init` prints something like:
-
-```
-🔑 Generated a new agent wallet.
-   Address: 0xAbC…def
-
-👉 NEXT STEP — delegate a secret to this wallet:
-   1. Open https://cifer.ternoa.dev
-   2. Connect your own wallet, create a CIFER secret
-   3. Click 'Delegate' and paste:  0xAbC…def
-   4. Share the secret ID back with the agent
-
-   Then run:  node dist/cifer-tool.js init --secret-id <N>
-```
-
-Step 3 uses the `config` command (detailed below) which generates the exact, correctly-shaped config block for your host — **don't ask the agent to hand-write YAML/JSON**, because shape requirements differ between hosts and small mistakes crash the host at startup. The tool also detects and repairs malformed existing configs.
-
-The same flow is exposed as the `cifer_init` MCP tool so agents using MCP don't need shell access — they just call the tool.
+Small mistakes — for example Hermes' `mcp_servers:` accidentally being a YAML sequence — crash the host at startup. The `config` command always emits the right shape, writes to the right path, backs up the existing file, and auto-repairs malformed entries. Agents should prefer it over ever touching those files directly. The same flow is also exposed as the `cifer_init` MCP tool, so agents running over MCP don't need shell access either — they just call the tool.
 
 ## Installation
 
