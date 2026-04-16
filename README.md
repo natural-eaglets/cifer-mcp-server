@@ -15,15 +15,19 @@ Any MCP-compatible agent framework (Nous Research Hermes, OpenClaw, Claude Code,
 
 ## Agent Onboarding (the short version)
 
-An agent you give this repo to can bring itself online in two stages:
+An agent you give this repo to can bring itself online in four commands:
 
 ```bash
 git clone https://github.com/natural-eaglets/cifer-mcp-server.git
 cd cifer-mcp-server && npm install && npm run build
-node dist/cifer-tool.js init
+node dist/cifer-tool.js init                             # 1. generate wallet
+# ...you delegate a secret on cifer.ternoa.dev ...
+node dist/cifer-tool.js init --secret-id <N>             # 2. save + verify
+node dist/cifer-tool.js config <host> --apply            # 3. wire into host
+# ...restart the host ...
 ```
 
-`init` generates a fresh wallet, writes it to `.env`, and prints something like:
+After step 1 `init` prints something like:
 
 ```
 🔑 Generated a new agent wallet.
@@ -38,7 +42,9 @@ node dist/cifer-tool.js init
    Then run:  node dist/cifer-tool.js init --secret-id <N>
 ```
 
-The agent relays the wallet address to you, you do the dashboard steps, paste the secret ID back, the agent finalizes its own setup. The same flow is exposed as the `cifer_init` MCP tool so agents using MCP don't need shell access — they just call the tool.
+Step 3 uses the `config` command (detailed below) which generates the exact, correctly-shaped config block for your host — **don't ask the agent to hand-write YAML/JSON**, because shape requirements differ between hosts and small mistakes crash the host at startup. The tool also detects and repairs malformed existing configs.
+
+The same flow is exposed as the `cifer_init` MCP tool so agents using MCP don't need shell access — they just call the tool.
 
 ## Installation
 
@@ -54,72 +60,94 @@ node dist/cifer-tool.js init --secret-id <N>   # save + verify
 
 ## Configuration
 
-### Nous Research Hermes
+**Do not write the MCP-server config by hand.** Each host expects a slightly different shape (Hermes wants a YAML mapping under `mcp_servers`, Claude/OpenClaw/Cursor want a JSON object under `mcpServers`, etc.), and subtle mistakes — like writing `mcp_servers` as a list — will crash the host at startup.
 
-Add to `~/.hermes/config.yaml`:
+Instead, use the built-in `config` command. It emits the exact block for the host you want, with the absolute path to *this* install's MCP server pre-filled, and can safely merge itself into the host's config file.
+
+### One-liner: auto-install
+
+```bash
+# Pick your host and let the tool handle the rest:
+node dist/cifer-tool.js config hermes           --apply
+node dist/cifer-tool.js config claude-desktop   --apply
+node dist/cifer-tool.js config claude-code      --apply
+node dist/cifer-tool.js config openclaw         --apply
+node dist/cifer-tool.js config cursor           --apply
+```
+
+This will:
+
+1. Back up your existing config (`<file>.cifer-backup.<timestamp>`)
+2. Parse it with a real YAML/JSON parser (no regex hackery)
+3. Merge a `cifer` entry alongside any other MCP servers you already have
+4. **Refuse to proceed** if the existing config has a malformed shape (e.g. `mcp_servers` as a list) and tell you what's wrong — re-run with `--force` to auto-repair.
+
+Then restart the host to pick up the new server.
+
+### Dry-run: print the snippet instead
+
+Drop `--apply` to print the correct block to stdout — useful if you'd rather paste manually, or if the host config lives in a non-default location.
+
+```bash
+node dist/cifer-tool.js config hermes
+# → prints YAML block
+node dist/cifer-tool.js config claude-desktop
+# → prints JSON block
+```
+
+### Custom config location
+
+```bash
+node dist/cifer-tool.js config hermes --apply --path /custom/path/to/config.yaml
+```
+
+### What the resulting entry looks like
+
+The tool always emits a minimal entry — `command`, `args`, nothing else. Secrets are read from the repo's `.env` file (via `dotenv`), never hard-coded in the host config:
 
 ```yaml
+# Hermes
 mcp_servers:
   cifer:
     command: node
-    args: ["/absolute/path/to/skills/cifer/dist/cifer-mcp-server.js"]
-    env:
-      CIFER_PK: "0x_your_agent_private_key"
-      CIFER_SECRET_ID: "31"
+    args:
+      - /absolute/path/to/cifer-mcp-server/dist/cifer-mcp-server.js
 ```
 
-Hermes auto-discovers the tools at startup. Use `tools.include` / `tools.exclude` to whitelist / blacklist specific tools per server.
-
-### OpenClaw
-
-Add to `openclaw.json`:
-
 ```json
+// Claude / OpenClaw / Cursor
 {
   "mcpServers": {
     "cifer": {
       "command": "node",
-      "args": ["/absolute/path/to/skills/cifer/dist/cifer-mcp-server.js"],
-      "env": {
-        "CIFER_PK": "0x_your_agent_private_key",
-        "CIFER_SECRET_ID": "31"
-      }
+      "args": ["/absolute/path/to/cifer-mcp-server/dist/cifer-mcp-server.js"]
     }
   }
 }
 ```
 
-### Claude Code / Claude Desktop
-
-Add to `~/.claude/settings.json` (or `claude_desktop_config.json`):
-
-```json
-{
-  "mcpServers": {
-    "cifer": {
-      "command": "node",
-      "args": ["/absolute/path/to/skills/cifer/dist/cifer-mcp-server.js"],
-      "env": {
-        "CIFER_PK": "0x_your_agent_private_key",
-        "CIFER_SECRET_ID": "31"
-      }
-    }
-  }
-}
-```
-
-### Cursor / Zed / Any other MCP host
-
-Same pattern — point them at `node /absolute/path/to/dist/cifer-mcp-server.js` with the two env vars.
+> ⚠️ **Never** put `CIFER_PK` directly in the host config. Keep it in `.env` next to the repo — it's not committed, it's not visible to other agents or tools, and it's easier to rotate.
 
 ### Development mode (tsx, no build step)
 
-If you're iterating on the server source:
+If you're iterating on server source, swap the `command` / `args`:
 
-```json
-"command": "npx",
-"args": ["tsx", "/absolute/path/to/skills/cifer/cifer-mcp-server.ts"]
 ```
+command: npx
+args: [tsx, /absolute/path/to/cifer-mcp-server.ts]
+```
+
+### Default config paths
+
+The `config` command knows each host's default config location:
+
+| Host | Default path |
+|---|---|
+| `hermes` | `~/.hermes/config.yaml` |
+| `claude-desktop` | macOS: `~/Library/Application Support/Claude/claude_desktop_config.json`, Windows: `%APPDATA%\Claude\claude_desktop_config.json`, Linux: `~/.config/Claude/claude_desktop_config.json` |
+| `claude-code` | `~/.claude/settings.json` |
+| `openclaw` | `~/.openclaw/config.json` |
+| `cursor` | `~/.cursor/mcp.json` |
 
 ## Environment Variables
 
@@ -198,6 +226,7 @@ For agent frameworks without MCP support, use the CLI directly. All commands out
 ```bash
 npx tsx cifer-tool.ts init                          # generate wallet + write .env
 npx tsx cifer-tool.ts init --secret-id 42           # save & verify secret ID
+npx tsx cifer-tool.ts config hermes --apply         # wire into host config safely
 npx tsx cifer-tool.ts check-env
 npx tsx cifer-tool.ts check-secret
 npx tsx cifer-tool.ts get-quota

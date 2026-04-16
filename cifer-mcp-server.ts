@@ -668,8 +668,8 @@ server.tool(
             : !authorized
               ? `Secret #${currentSecretId} is NOT delegated to ${address}. Ask the secret owner to delegate it via ${DASHBOARD_URL}.`
               : isSyncing
-                ? `Ready — but secret #${currentSecretId} is still syncing. Wait 30–60 seconds, then encrypt/decrypt will work. Ask the user to restart the MCP host so the new .env is picked up.`
-                : `Ready. Agent can now encrypt and decrypt with secret #${currentSecretId}. Ask the user to restart the MCP host so the new .env is picked up.`;
+                ? `Ready — but secret #${currentSecretId} is still syncing. Wait 30–60 seconds before the first encrypt/decrypt call. If the MCP host is already configured, no restart is needed (the .env is reloaded on each tool call via dotenv).`
+                : `Ready. Agent can now encrypt and decrypt with secret #${currentSecretId}. If this is the first install, register the server with the MCP host using the CLI: 'node dist/cifer-tool.js config <host> --apply' (hosts: hermes, claude-desktop, claude-code, openclaw, cursor), then restart the host.`;
 
       return {
         content: [

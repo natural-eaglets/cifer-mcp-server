@@ -18,9 +18,18 @@
  */
 
 import "dotenv/config";
-import { resolve, basename, join } from "node:path";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, resolve, basename, join } from "node:path";
+import {
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  writeFileSync,
+} from "node:fs";
+import { fileURLToPath } from "node:url";
+import { homedir, platform } from "node:os";
 import { Wallet } from "ethers";
+import yaml from "js-yaml";
 import {
   createCiferSdk,
   keyManagement,
@@ -580,9 +589,279 @@ async function cmdInit(args: string[]) {
     nextStep: !secretIdStr
       ? `Delegate secret to ${address}, then run: cifer-mcp init --secret-id <N>`
       : authorized
-        ? "Restart your MCP host to pick up the config."
+        ? "Register the server with your MCP host using `cifer-tool config <host> --apply` (hosts: hermes, claude-desktop, claude-code, openclaw, cursor), then restart the host."
         : `Ask secret owner to delegate #${secretIdStr} to ${address}.`,
   });
+}
+
+// ─── config <host> ───────────────────────────────────────────────────────────
+//
+// Generates the correct MCP-server config block for every supported host,
+// pinned to the absolute path of *this* install's built server. Agents should
+// prefer this over hand-writing YAML/JSON — the shape requirements differ
+// across hosts and small mistakes break the host at startup.
+
+/** Absolute path to dist/cifer-mcp-server.js belonging to THIS install. */
+function resolveMcpServerPath(): string {
+  // Works whether the CLI runs from source (tsx) or the built copy (node).
+  // __dirname-equivalent for ESM:
+  const here = dirname(fileURLToPath(import.meta.url));
+  // If we're running as dist/cifer-tool.js, sibling is dist/cifer-mcp-server.js.
+  // If we're running as cifer-tool.ts via tsx, build output sits at ./dist/.
+  const sibling = join(here, "cifer-mcp-server.js");
+  if (existsSync(sibling)) return sibling;
+  const built = join(here, "dist", "cifer-mcp-server.js");
+  if (existsSync(built)) return built;
+  // Fallback: compute path relative to repo root assuming we're in the
+  // standard layout. If nothing resolves, we still return the expected path
+  // so the output is usable even before `npm run build` runs — we just warn.
+  return join(here, "dist", "cifer-mcp-server.js");
+}
+
+type HostId =
+  | "hermes"
+  | "claude-desktop"
+  | "claude-code"
+  | "openclaw"
+  | "cursor";
+
+type HostSpec = {
+  id: HostId;
+  label: string;
+  format: "yaml" | "json";
+  defaultPath: string;
+  /** Key inside the file that holds MCP servers (dot-notation). */
+  key: string;
+};
+
+function defaultConfigPath(host: HostId): string {
+  const home = homedir();
+  const p = platform();
+  switch (host) {
+    case "hermes":
+      return join(home, ".hermes", "config.yaml");
+    case "claude-desktop":
+      if (p === "darwin")
+        return join(
+          home,
+          "Library",
+          "Application Support",
+          "Claude",
+          "claude_desktop_config.json"
+        );
+      if (p === "win32")
+        return join(
+          process.env.APPDATA ?? join(home, "AppData", "Roaming"),
+          "Claude",
+          "claude_desktop_config.json"
+        );
+      return join(home, ".config", "Claude", "claude_desktop_config.json");
+    case "claude-code":
+      return join(home, ".claude", "settings.json");
+    case "openclaw":
+      return join(home, ".openclaw", "config.json");
+    case "cursor":
+      return join(home, ".cursor", "mcp.json");
+  }
+}
+
+const HOST_SPECS: Record<HostId, HostSpec> = {
+  hermes: {
+    id: "hermes",
+    label: "Nous Research Hermes",
+    format: "yaml",
+    defaultPath: defaultConfigPath("hermes"),
+    key: "mcp_servers",
+  },
+  "claude-desktop": {
+    id: "claude-desktop",
+    label: "Claude Desktop",
+    format: "json",
+    defaultPath: defaultConfigPath("claude-desktop"),
+    key: "mcpServers",
+  },
+  "claude-code": {
+    id: "claude-code",
+    label: "Claude Code",
+    format: "json",
+    defaultPath: defaultConfigPath("claude-code"),
+    key: "mcpServers",
+  },
+  openclaw: {
+    id: "openclaw",
+    label: "OpenClaw",
+    format: "json",
+    defaultPath: defaultConfigPath("openclaw"),
+    key: "mcpServers",
+  },
+  cursor: {
+    id: "cursor",
+    label: "Cursor",
+    format: "json",
+    defaultPath: defaultConfigPath("cursor"),
+    key: "mcpServers",
+  },
+};
+
+/** The canonical CIFER entry — identical across all hosts. */
+function ciferEntry(serverPath: string) {
+  return {
+    command: "node",
+    args: [serverPath],
+  };
+}
+
+/** Render a standalone snippet for copy-paste. */
+function renderSnippet(host: HostSpec, serverPath: string): string {
+  const entry = { [host.key]: { cifer: ciferEntry(serverPath) } };
+  return host.format === "yaml"
+    ? yaml.dump(entry, { lineWidth: 120, noRefs: true })
+    : JSON.stringify(entry, null, 2);
+}
+
+/** Merge the CIFER entry into an existing config file. */
+function applyToFile(
+  host: HostSpec,
+  filePath: string,
+  serverPath: string,
+  force: boolean
+): { backupPath: string | null; existingHadBadShape: boolean } {
+  const resolved = resolve(filePath);
+  mkdirSync(dirname(resolved), { recursive: true });
+
+  let existing: Record<string, unknown> = {};
+  let existingHadBadShape = false;
+
+  if (existsSync(resolved)) {
+    const raw = readFileSync(resolved, "utf-8");
+    if (raw.trim().length > 0) {
+      try {
+        existing =
+          host.format === "yaml"
+            ? ((yaml.load(raw) ?? {}) as Record<string, unknown>)
+            : JSON.parse(raw);
+      } catch (e) {
+        throw new Error(
+          `Failed to parse existing ${host.format.toUpperCase()} at ${resolved}: ${e instanceof Error ? e.message : String(e)}`
+        );
+      }
+    }
+  }
+
+  // Detect bad shape: value is a list instead of a mapping (the exact bug
+  // that bricked Hermes earlier).
+  const current = (existing as Record<string, unknown>)[host.key];
+  if (current !== undefined && current !== null) {
+    if (Array.isArray(current)) {
+      existingHadBadShape = true;
+      if (!force) {
+        throw new Error(
+          `"${host.key}" in ${resolved} is a list, but ${host.label} requires a mapping. ` +
+            `This would have crashed ${host.label} at startup. ` +
+            `Re-run with --force to overwrite the bad shape with a correct mapping.`
+        );
+      }
+    } else if (typeof current !== "object") {
+      throw new Error(
+        `"${host.key}" in ${resolved} is of type "${typeof current}" — expected a mapping.`
+      );
+    }
+  }
+
+  // Backup before mutating
+  let backupPath: string | null = null;
+  if (existsSync(resolved)) {
+    backupPath = resolved + ".cifer-backup." + Date.now();
+    copyFileSync(resolved, backupPath);
+  }
+
+  // Merge: write a fresh mapping if the current shape was bad or missing,
+  // otherwise merge alongside any other MCP entries the user already has.
+  const mcpMap =
+    !existingHadBadShape && typeof current === "object" && current !== null
+      ? { ...(current as Record<string, unknown>) }
+      : {};
+  mcpMap.cifer = ciferEntry(serverPath);
+  (existing as Record<string, unknown>)[host.key] = mcpMap;
+
+  const output =
+    host.format === "yaml"
+      ? yaml.dump(existing, { lineWidth: 120, noRefs: true })
+      : JSON.stringify(existing, null, 2) + "\n";
+  writeFileSync(resolved, output);
+
+  return { backupPath, existingHadBadShape };
+}
+
+async function cmdConfig(args: string[]) {
+  const [hostArg, ...rest] = args;
+  const apply = rest.includes("--apply");
+  const force = rest.includes("--force");
+  const pathFlag = parseFlag(rest, "--path");
+
+  if (!hostArg || hostArg === "--help") {
+    const hostList = Object.values(HOST_SPECS)
+      .map((h) => `    - ${h.id}  (${h.label}, ${h.format})`)
+      .join("\n");
+    process.stderr.write(
+      `Usage: cifer-tool config <host> [--apply] [--path <file>] [--force]\n\n` +
+        `Supported hosts:\n${hostList}\n\n` +
+        `Examples:\n` +
+        `  cifer-tool config hermes                # print YAML snippet to stdout\n` +
+        `  cifer-tool config hermes --apply        # merge into ~/.hermes/config.yaml\n` +
+        `  cifer-tool config claude-desktop --apply\n\n`
+    );
+    process.exit(0);
+  }
+
+  const host = HOST_SPECS[hostArg as HostId];
+  if (!host) {
+    fail(`Unknown host "${hostArg}". Supported: ${Object.keys(HOST_SPECS).join(", ")}`);
+    return;
+  }
+
+  const serverPath = resolveMcpServerPath();
+  if (!existsSync(serverPath)) {
+    process.stderr.write(
+      `⚠️  ${serverPath} does not exist yet. Run 'npm run build' first.\n`
+    );
+  }
+
+  if (!apply) {
+    // Print the snippet to stdout. Agents should parse/paste this rather than
+    // constructing YAML/JSON by hand.
+    const snippet = renderSnippet(host, serverPath);
+    process.stdout.write(snippet);
+    if (!snippet.endsWith("\n")) process.stdout.write("\n");
+    process.stderr.write(
+      `\n💡 Paste the block above into ${host.defaultPath}\n` +
+        `   Or re-run with --apply to merge it automatically.\n`
+    );
+    process.exit(0);
+  }
+
+  const targetPath = pathFlag ?? host.defaultPath;
+
+  try {
+    const { backupPath, existingHadBadShape } = applyToFile(
+      host,
+      targetPath,
+      serverPath,
+      force
+    );
+    ok({
+      action: "applied",
+      host: host.id,
+      configFile: targetPath,
+      backupPath,
+      serverPath,
+      fixedBadShape: existingHadBadShape,
+      restartRequired: true,
+      nextStep: `Restart ${host.label} to pick up the new MCP server.`,
+    });
+  } catch (e) {
+    fail(e instanceof Error ? e.message : String(e));
+  }
 }
 
 // ─── Router ──────────────────────────────────────────────────────────────────
@@ -591,6 +870,7 @@ const [command, ...args] = process.argv.slice(2);
 
 const commands: Record<string, (args: string[]) => Promise<void>> = {
   init: cmdInit,
+  config: cmdConfig,
   "check-env": cmdCheckEnv,
   "check-secret": cmdCheckSecret,
   "get-quota": cmdGetQuota,
@@ -608,6 +888,9 @@ Usage:  npx tsx cifer-tool.ts <command> [flags]
 
 Commands:
   init [--secret-id <N>] [--force]     Generate agent wallet + write .env (start here)
+  config <host> [--apply] [--path f]   Print/apply MCP config block for a host.
+                                       Hosts: hermes, claude-desktop, claude-code,
+                                              openclaw, cursor
   check-env                            Validate .env configuration
   check-secret [--id <N>]              Check if a secret exists and is ready
   get-quota                            Show encrypt/decrypt data quota
@@ -616,6 +899,9 @@ Commands:
   decrypt --cifer <hex> --message <hex>  Decrypt a payload
   encrypt-file --file <path>           Encrypt a file → .cifer output
   decrypt-file --file <path>           Decrypt a .cifer file
+
+Always prefer 'config <host> --apply' over hand-editing YAML/JSON — the
+shape requirements differ across hosts and small mistakes can break them.
 
 All output is JSON on stdout. Progress/errors go to stderr.
 Requires CIFER_PK and CIFER_SECRET_ID in .env — see .env.example.
