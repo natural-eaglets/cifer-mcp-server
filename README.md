@@ -2,25 +2,54 @@
 
 > MCP server + CLI that gives AI agents quantum-resistant encryption powers via [CIFER](https://sdk.cifer-security.com/) on Ternoa zkEVM.
 
-Any MCP-compatible agent framework (Nous Research Hermes, OpenClaw, Claude Code, Claude Desktop, Cursor, Zed…) can plug this in and instantly gain 7 tools: encrypt / decrypt messages and files using ML-KEM-768 (NIST post-quantum) + AES-256-GCM, plus env / secret / quota introspection.
+Any MCP-compatible agent framework (Nous Research Hermes, OpenClaw, Claude Code, Claude Desktop, Cursor, Zed…) can plug this in and instantly gain 8 tools: encrypt / decrypt messages and files using ML-KEM-768 (NIST post-quantum) + AES-256-GCM, plus env / secret / quota introspection — and an `init` tool that onboards the agent itself.
 
 ## Features
 
-- **7 MCP tools** — check env, check secret, read quota, encrypt text, decrypt text, encrypt file, decrypt file
+- **8 MCP tools** — init, check env, check secret, read quota, encrypt text, decrypt text, encrypt file, decrypt file
+- **Self-onboarding** — `cifer_init` generates the agent wallet and tells the user exactly what to do on the dashboard
 - **stdio transport** — no ports, no daemons, the host spawns it on demand
 - **CLI fallback** — same commands as a plain shell tool for agents that don't speak MCP
 - **Private-key signer** — server-side wallet from `.env` (never browser-bound)
 - **Ternoa mainnet** by default, chain / RPC / Blackbox URL all overridable
 
+## Agent Onboarding (the short version)
+
+An agent you give this repo to can bring itself online in two stages:
+
+```bash
+git clone https://github.com/natural-eaglets/cifer-mcp-server.git
+cd cifer-mcp-server && npm install && npm run build
+node dist/cifer-tool.js init
+```
+
+`init` generates a fresh wallet, writes it to `.env`, and prints something like:
+
+```
+🔑 Generated a new agent wallet.
+   Address: 0xAbC…def
+
+👉 NEXT STEP — delegate a secret to this wallet:
+   1. Open https://cifer.ternoa.dev
+   2. Connect your own wallet, create a CIFER secret
+   3. Click 'Delegate' and paste:  0xAbC…def
+   4. Share the secret ID back with the agent
+
+   Then run:  node dist/cifer-tool.js init --secret-id <N>
+```
+
+The agent relays the wallet address to you, you do the dashboard steps, paste the secret ID back, the agent finalizes its own setup. The same flow is exposed as the `cifer_init` MCP tool so agents using MCP don't need shell access — they just call the tool.
+
 ## Installation
 
 ```bash
-git clone <this-repo>
-cd skills/cifer
+git clone https://github.com/natural-eaglets/cifer-mcp-server.git
+cd cifer-mcp-server
 npm install
 npm run build
-cp .env.example .env
-# Edit .env and set CIFER_PK + CIFER_SECRET_ID
+node dist/cifer-tool.js init      # generates wallet, writes .env
+# …you delegate a secret via the dashboard…
+node dist/cifer-tool.js init --secret-id <N>   # save + verify
 ```
 
 ## Configuration
@@ -110,6 +139,14 @@ To get `CIFER_SECRET_ID`:
 
 ## Available Tools
 
+### `cifer_init`
+Onboard the agent. Generates a wallet if one doesn't exist, writes `.env`, and (if given a secret ID) verifies on-chain that the wallet is authorized. The tool's response includes a `nextStep` field with exactly what the agent should tell the user.
+
+| Param | Type | Description |
+|---|---|---|
+| `secretId` | string (optional) | Save and verify this secret ID. Omit on first call; provide after the user delegates. |
+| `force` | boolean (optional) | Regenerate the wallet even if `CIFER_PK` already exists. **Destructive** — you'll lose access to any secret delegated to the old wallet. |
+
 ### `cifer_check_env`
 Check if `CIFER_PK` / `CIFER_SECRET_ID` are set and the wallet is valid. **Call this first.**
 
@@ -159,6 +196,8 @@ Async file decryption. Strips the `.cifer` extension on the output.
 For agent frameworks without MCP support, use the CLI directly. All commands output JSON on stdout.
 
 ```bash
+npx tsx cifer-tool.ts init                          # generate wallet + write .env
+npx tsx cifer-tool.ts init --secret-id 42           # save & verify secret ID
 npx tsx cifer-tool.ts check-env
 npx tsx cifer-tool.ts check-secret
 npx tsx cifer-tool.ts get-quota
