@@ -17,7 +17,6 @@
  * Errors go to stderr and set a non-zero exit code.
  */
 
-import "dotenv/config";
 import { dirname, resolve, basename, join } from "node:path";
 import {
   copyFileSync,
@@ -30,6 +29,11 @@ import { fileURLToPath } from "node:url";
 import { homedir, platform } from "node:os";
 import { Wallet } from "ethers";
 import yaml from "js-yaml";
+import { canonicalEnvPath, loadEnv } from "./env-loader.js";
+
+// Load .env relative to THIS script, not process.cwd() — MCP hosts launch
+// the subprocess from their own directory.
+const LOADED_ENV_PATH = loadEnv(import.meta.url);
 import {
   createCiferSdk,
   keyManagement,
@@ -131,6 +135,9 @@ async function cmdCheckEnv() {
     CIFER_CHAIN_ID: CHAIN_ID,
     walletAddress: address ?? null,
     ready: hasPk && hasSecretId,
+    envFileLoaded: LOADED_ENV_PATH,
+    envFileExpected: ENV_PATH,
+    cwd: process.cwd(),
   });
 }
 
@@ -407,7 +414,8 @@ async function cmdDecryptFile(args: string[]) {
 
 // ─── init ────────────────────────────────────────────────────────────────────
 
-const ENV_PATH = join(process.cwd(), ".env");
+/** Canonical .env path for `init` to write — always the repo root, never dist/. */
+const ENV_PATH = canonicalEnvPath(import.meta.url);
 const DASHBOARD_URL =
   process.env.CIFER_DASHBOARD_URL ?? "https://cifer.ternoa.dev";
 

@@ -126,7 +126,18 @@ mcp_servers:
 }
 ```
 
-> ⚠️ **Never** put `CIFER_PK` directly in the host config. Keep it in `.env` next to the repo — it's not committed, it's not visible to other agents or tools, and it's easier to rotate.
+> ⚠️ **Never** put `CIFER_PK` directly in the host config. Keep it in `.env` next to the repo — it's not committed, it's not visible to other agents or tools, and it's easier to rotate. The MCP server auto-loads `.env` from its own directory regardless of the host's working directory, so you do not need to pass env vars through the host config.
+
+### How `.env` is resolved (v1.1+)
+
+The server finds `.env` via this order (first hit wins):
+
+1. `$CIFER_ENV_FILE` — explicit override via env var
+2. `<server-script-dir>/.env` — running via `tsx` from source
+3. `<server-script-dir>/../.env` — running `dist/cifer-mcp-server.js`, `.env` in repo root
+4. `<cwd>/.env` — legacy fallback
+
+This means Hermes, Claude Desktop, OpenClaw etc. can spawn the server from anywhere — it will always find the `.env` you wrote with `init`. You can verify which file was loaded by calling `cifer_check_env` (MCP) or `check-env` (CLI) — the response includes `envFileLoaded` and `envFileExpected`.
 
 ### Development mode (tsx, no build step)
 

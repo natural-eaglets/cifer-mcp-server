@@ -16,9 +16,14 @@
  *   CIFER_CHAIN_ID=752025     (optional)
  */
 
-import "dotenv/config";
 import { join, resolve } from "node:path";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { canonicalEnvPath, loadEnv } from "./env-loader.js";
+
+// Load .env relative to THIS script, not process.cwd(). MCP hosts (Hermes,
+// Claude Desktop, OpenClaw) spawn the server from their own directory, so
+// the old `import "dotenv/config"` silently missed the repo's .env.
+const LOADED_ENV_PATH = loadEnv(import.meta.url);
 import { Wallet } from "ethers";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
@@ -117,6 +122,8 @@ server.tool(
       CIFER_CHAIN_ID: CHAIN_ID,
       walletAddress: address ?? null,
       ready: hasPk && hasSecretId,
+      envFileLoaded: LOADED_ENV_PATH,
+      envFileExpected: ENV_PATH,
     };
 
     if (!result.ready) {
@@ -127,9 +134,10 @@ server.tool(
             text:
               toJson(result) +
               "\n\n⚠️ CIFER is not ready. The user needs to:\n" +
-              "1. Go to the CIFER Agent Console and create a secret.\n" +
-              "2. Delegate it to this agent's wallet address.\n" +
-              "3. Set CIFER_PK (private key) and CIFER_SECRET_ID in .env.",
+              `1. Make sure .env exists at ${ENV_PATH}\n` +
+              "2. Set CIFER_PK (agent private key) and CIFER_SECRET_ID inside it.\n" +
+              "   Use `node dist/cifer-tool.js init` to generate CIFER_PK automatically.\n" +
+              "3. Do NOT put CIFER_PK in the MCP host config file — keep it in .env only.",
           },
         ],
       };
@@ -538,7 +546,8 @@ server.tool(
 
 // ── Tool: cifer_init ─────────────────────────────────────────────────────────
 
-const ENV_PATH = join(process.cwd(), ".env");
+/** Canonical .env path — always the repo root, never inside dist/. */
+const ENV_PATH = canonicalEnvPath(import.meta.url);
 const DASHBOARD_URL =
   process.env.CIFER_DASHBOARD_URL ?? "https://cifer.ternoa.dev";
 

@@ -13,6 +13,6 @@
     "sourceMap": true,
     "resolveJsonModule": true
   },
-  "include": ["cifer-mcp-server.ts", "cifer-tool.ts"],
+  "include": ["cifer-mcp-server.ts", "cifer-tool.ts", "env-loader.ts"],
   "exclude": ["node_modules", "dist"]
 }
